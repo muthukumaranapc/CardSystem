@@ -29,7 +29,7 @@ namespace API.Test.Unit
             var result = await service.GetCardByIdAsync(cardId);
 
             // Assert
-            Assert.NotNull(result);
+            Assert.NotNull(result); ;
             Assert.Equal(cardId, result.Id);
         }
 
