@@ -21,27 +21,26 @@ namespace API.Service.Card
         }
 
         public async Task<model.Card> GetCardByIdAsync(Guid id)
-        {
-            try
-            {
-                if (id == Guid.Empty)
-                    throw new ArgumentException("Invalid card id");
+ {
+     try
+     {
+         if (id == Guid.Empty)
+         throw new ArgumentException("Invalid card id", nameof(id));
+    
+         var card = await _repository.GetByIdAsync(id);
 
-                var card = await _repository.GetByIdAsync(id);
+         return card ?? throw new KeyNotFoundException(
+             $"Card {id} not found");
+     }
+     catch (Exception ex) when (ex is not KeyNotFoundException)
+     {
+         _logger.LogError(ex,
+             "Unexpected error while getting card. CardId: {CardId}", id);
 
-                if (card is null)
-                    throw new NotSupportedException($"Card {id} not found");
-
-                return card;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex,
-                    "Unexpected error while getting card. CardId: {CardId}", id);
-
-                throw new ApplicationException("An unexpected error occurred");
-            }
-        }
+         throw new ApplicationException(
+             "An unexpected error occurred", ex);
+     }
+ }
 
         public async Task<Guid> CreateCardAsync(model.Card card)
         {
