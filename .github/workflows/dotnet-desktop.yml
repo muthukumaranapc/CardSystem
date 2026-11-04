@@ -1,18 +1,26 @@
-
-name: CardSystem CI Pipeline
+name: CardSystem CI/CD Pipeline
 
 on:
   push:
     branches:
       - main
+
   pull_request:
     branches:
       - main
+
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
+
+  # --------------------------------
+  # CI - Clean, Build and Test
+  # --------------------------------
   build:
-    name: Build and Test
+    name: Clean, Build and Test
     runs-on: ubuntu-latest
 
     steps:
@@ -24,38 +32,17 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      - name: Clean solution
+        run: dotnet clean CardSystem.slnx --configuration Release
+
       - name: Restore dependencies
         run: dotnet restore CardSystem.slnx
 
       - name: Build solution
-        run: dotnet build CardSystem.slnx
-          --configuration Release
-          --no-restore
+        run: dotnet build CardSystem.slnx --configuration Release --no-restore
 
       - name: Run unit tests
-        run: dotnet test API.Test/API.Test.csproj
-          --configuration Release
-          --no-build
-          --logger "trx;LogFileName=test-results.trx"
-
-      - name: Publish Card API
-        run: dotnet publish API.Card/API.Card.csproj
-          --configuration Release
-          --no-build
-          --output ./publish/CardAPI
-
-      - name: Publish Finance API
-        run: dotnet publish API.Finance/API.Finance.csproj
-          --configuration Release
-          --no-build
-          --output ./publish/FinanceAPI
-
-      - name: Upload deployment artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: CardSystem-Release
-          path: publish/
-          retention-days: 14
+        run: dotnet test API.Test/API.Test.csproj --configuration Release --no-build --no-restore --logger "trx;LogFileName=test-results.trx"
 
       - name: Upload test results
         if: always()
@@ -64,3 +51,137 @@ jobs:
           name: CardSystem-TestResults
           path: '**/test-results.trx'
           if-no-files-found: ignore
+          retention-days: 14
+
+  # --------------------------------
+  # CD - Docker Build and Deployment
+  # --------------------------------
+  deploy:
+    name: Build and Deploy Windows Containers
+
+    needs: build
+
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+
+    runs-on: [self-hosted, Windows, X64, cardsystem-production]
+
+    environment: production
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Verify Windows Docker Engine
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $dockerOs = docker info --format '{{.OSType}}'
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Docker engine is not available."
+          }
+
+          if ($dockerOs.Trim() -ne 'windows') {
+              throw "Docker must be configured for Windows containers."
+          }
+
+      - name: Login to GitHub Container Registry
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $env:GH_TOKEN | docker login ghcr.io --username $env:GITHUB_ACTOR --password-stdin
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "GitHub Container Registry login failed."
+          }
+
+      - name: Build and Push Card API Image
+        shell: pwsh
+        env:
+          IMAGE_OWNER: ${{ github.repository_owner }}
+        run: |
+          $owner = $env:IMAGE_OWNER.ToLowerInvariant()
+          $tag = $env:GITHUB_SHA
+
+          $image = "ghcr.io/$owner/cardsystem-card-api:$tag"
+
+          docker build --pull --file API.Card/Dockerfile --tag $image .
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Card API Docker build failed."
+          }
+
+          docker push $image
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Card API Docker push failed."
+          }
+
+          docker tag $image "ghcr.io/$owner/cardsystem-card-api:latest"
+          docker push "ghcr.io/$owner/cardsystem-card-api:latest"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Card API latest image push failed."
+          }
+
+      - name: Build and Push Finance API Image
+        shell: pwsh
+        env:
+          IMAGE_OWNER: ${{ github.repository_owner }}
+        run: |
+          $owner = $env:IMAGE_OWNER.ToLowerInvariant()
+          $tag = $env:GITHUB_SHA
+
+          $image = "ghcr.io/$owner/cardsystem-finance-api:$tag"
+
+          docker build --pull --file API.Finance/Dockerfile --tag $image .
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Finance API Docker build failed."
+          }
+
+          docker push $image
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Finance API Docker push failed."
+          }
+
+          docker tag $image "ghcr.io/$owner/cardsystem-finance-api:latest"
+          docker push "ghcr.io/$owner/cardsystem-finance-api:latest"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Finance API latest image push failed."
+          }
+
+      - name: Deploy APIs using Docker Compose
+        shell: pwsh
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+          SQL_CONNECTION_STRING: ${{ secrets.SQL_CONNECTION_STRING }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if ([string]::IsNullOrWhiteSpace($env:SQL_CONNECTION_STRING)) {
+              throw "SQL_CONNECTION_STRING secret is missing."
+          }
+
+          docker compose pull
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Docker image pull failed."
+          }
+
+          docker compose up -d --remove-orphans
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Docker deployment failed."
+          }
+
+          docker ps
