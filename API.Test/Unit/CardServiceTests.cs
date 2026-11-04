@@ -47,7 +47,7 @@ namespace API.Test.Unit
             var service = new CardService(repoMock.Object, loggerMock.Object);
 
             // Act & Assert
-            await Assert.ThrowsAsync<NotSupportedException>(() => service.GetCardByIdAsync(cardId));
+            await Assert.ThrowsAsync<KeyNotFoundException>(() => service.GetCardByIdAsync(cardId));
         }
 
         [Fact]
